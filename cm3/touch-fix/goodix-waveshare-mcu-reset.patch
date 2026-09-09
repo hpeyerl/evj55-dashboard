@@ -1,0 +1,84 @@
+Reference diff vs mainline goodix.c as shipped in kernel 6.1.84 (matches the box
+kernel 6.1.84-18-rk2410-nocsf; base = ~/cm3-buildroot/.../linux-custom/.../goodix.c).
+NOT yet applied/built/tested. Verify context against the actual radxa BSP goodix
+source before building (line numbers/blank lines may differ slightly); apply with
+`patch -p1 --fuzz=3 < goodix-waveshare-mcu-reset.patch` and eyeball the hunks.
+
+Adds a driver-owned GT911 reset over i2c to the panel MCU@0x45 (reg 0x94 bit1 =
+line 9), called in probe() and resume(), gated on DT bool "waveshare,panel-mcu-reset".
+This is required because the MCU is not exposed as a gpiochip on this BSP, so the
+normal reset-gpio path is unavailable, and goodix_resume() otherwise early-returns
+without any reset (the STR-death path).
+
+--- a/drivers/input/touchscreen/goodix.c
++++ b/drivers/input/touchscreen/goodix.c
+@@ -234,6 +234,45 @@ int goodix_i2c_write_u8(struct i2c_client *client, u16 reg, u8 value)
+ {
+ 	return goodix_i2c_write(client, reg, &value, sizeof(value));
+ }
++
++/*
++ * Waveshare 12.3" DSI panel: the GT911 RESET is driven by the panel MCU @0x45
++ * (reg 0x94 bit1 = gpio line 9: 0 = assert, 1 = release), not a SoC gpiochip.
++ * No waveshare panel-regulator/gpiochip driver on this kernel, so pulse it over
++ * i2c here. Enabled by the DT bool "waveshare,panel-mcu-reset" on the goodix node.
++ */
++#define WS_PANEL_MCU_ADDR      0x45
++#define WS_PANEL_MCU_GPIO_REG  0x94
++#define WS_PANEL_TOUCH_RST_BIT BIT(1)
++
++static int goodix_ws_mcu_reset(struct goodix_ts_data *ts)
++{
++	struct i2c_adapter *adap = ts->client->adapter;
++	u8 reg = WS_PANEL_MCU_GPIO_REG, val;
++	u8 wr[2] = { WS_PANEL_MCU_GPIO_REG, 0 };
++	struct i2c_msg rmsg[2] = {
++		{ .addr = WS_PANEL_MCU_ADDR, .flags = 0,        .len = 1, .buf = &reg },
++		{ .addr = WS_PANEL_MCU_ADDR, .flags = I2C_M_RD, .len = 1, .buf = &val },
++	};
++	struct i2c_msg wmsg = { .addr = WS_PANEL_MCU_ADDR, .flags = 0, .len = 2, .buf = wr };
++
++	if (i2c_transfer(adap, rmsg, 2) != 2)		/* read: only toggle line 9 */
++		return -EIO;
++	wr[1] = val & ~WS_PANEL_TOUCH_RST_BIT;		/* assert reset */
++	if (i2c_transfer(adap, &wmsg, 1) != 1)
++		return -EIO;
++	msleep(20);
++	wr[1] = val | WS_PANEL_TOUCH_RST_BIT;		/* release -> GT911 defaults to 0x5d */
++	if (i2c_transfer(adap, &wmsg, 1) != 1)
++		return -EIO;
++	msleep(60);					/* GT911 boot after reset release */
++	return 0;
++}
+
+ /**
+  * goodix_i2c_read - (unchanged; context marker only)
+@@ -1363,6 +1402,11 @@ reset:
+ 		error = goodix_reset(ts);
+ 		if (error)
+ 			return error;
+ 	}
+
++	if (device_property_read_bool(&client->dev, "waveshare,panel-mcu-reset")) {
++		error = goodix_ws_mcu_reset(ts);
++		if (error)
++			return error;
++	}
++
+ 	error = goodix_i2c_test(client);
+ 	if (error) {
+@@ -1483,6 +1527,12 @@ static int __maybe_unused goodix_resume(struct device *dev)
+ 	u8 config_ver;
+ 	int error;
+
++	/* Re-boot the GT911 on every wake; goodix_resume() otherwise early-returns
++	 * below (IRQ_PIN_ACCESS_NONE) without any reset = touch dead after STR. */
++	if (device_property_read_bool(&client->dev, "waveshare,panel-mcu-reset")) {
++		error = goodix_ws_mcu_reset(ts);
++		if (error)
++			return error;
++	}
++
+ 	if (ts->irq_pin_access_method == IRQ_PIN_ACCESS_NONE) {
+ 		enable_irq(client->irq);
+ 		return 0;
