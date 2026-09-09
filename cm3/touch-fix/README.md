@@ -144,3 +144,35 @@ See memory [[project_cm3_dashboard_app]] / [[feedback_dont_confabulate]].
   fails at boot; the working (renamed, reset-patched, irq-failing) build lived only in
   tmpfs `~/goodix-build` and is gone after reboot. Rebuild = `goodix.c` +
   `goodix_fwupload.c` + a two-file Makefile (`goodix_ts-y := goodix.o goodix_fwupload.o`).
+
+## 2026-09-09 - touch works at the driver level; LVGL coordinate mapping remains
+
+Driver DONE (reset + poll patch, persisted to eMMC, auto-loads). Captured real
+taps: X 0-1920, Y 0-720 = the GT911 emits in the LANDSCAPE frame. App restart
+detected it (`dashboard: touch: /dev/input/event2`), but button presses do not
+register - a coordinate-mapping issue, NOT the driver.
+
+ROOT CAUSE (read from vendored LVGL 9.5.0, not guessed):
+- `lv_evdev.c _evdev_process_pointer` scales raw input into `disp->hor_res` x
+  `disp->ver_res` = the NATIVE panel frame **720x1920 portrait** (those fields keep
+  the created resolution; rotation does not change them).
+- `lv_indev.c:743` then calls `lv_display_rotate_point()` -> LVGL rotates the point
+  270 itself onto the visible 1920x720 landscape UI.
+- So LVGL expects raw touch in the 720x1920 PORTRAIT frame; the GT911 gives 1920x720
+  LANDSCAPE. Mismatch -> presses miss. (Rendering is already correct; touch only.)
+
+FIX (app-only; no kernel/DTB/reboot): in `src/main_linux.cpp`, right after
+`lv_indev_set_display(touch, disp);`
+```c
+lv_evdev_set_swap_axes(touch, true);              /* landscape raw -> portrait frame */
+lv_evdev_set_calibration(touch, 0, 0, 720, 1920); /* rescale swapped axes 1:1 to native */
+```
+Then rebuild on the box (`cmake --build build -j1`) + `systemctl restart dashboard`.
+If mirrored (touch a corner to see which way), invert that axis by swapping its
+min/max in the SAME call:
+- X mirrored: `lv_evdev_set_calibration(touch, 720, 0, 0, 1920)`
+- Y mirrored: `lv_evdev_set_calibration(touch, 0, 1920, 720, 0)`
+- both:      `lv_evdev_set_calibration(touch, 720, 1920, 0, 0)`
+lv_evdev API: `lv_evdev_set_swap_axes(indev,bool)`, `lv_evdev_set_calibration(indev,
+min_x,min_y,max_x,max_y)` - `_evdev_calibrate` inverts when min>max. Iterate: 2-3
+rebuilds max to find the correct corner.
