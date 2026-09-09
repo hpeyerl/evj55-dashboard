@@ -122,3 +122,25 @@ sudo insmod ./goodix_ts.ko     # or install: cp over the packaged .ko(.xz), depm
 - runtime unbind/REBIND the BSP Goodix-TS driver -> kernel Oops.
 - remote-reboot without someone at the box (wifi only, no OOB recovery).
 See memory [[project_cm3_dashboard_app]] / [[feedback_dont_confabulate]].
+
+## 2026-09-09 - built + tested on the box (reset SOLVED; IRQ open)
+
+- **MCU-reset-in-probe patch WORKS.** With the DT node switched to `goodix,gt911`
+  + `waveshare,panel-mcu-reset` and the patched driver loaded, probe pulsed MCU
+  line 9 and the driver read **`ID 9271`**. The reset half is proven end-to-end.
+- **Blocker (the remaining half):** I compiled `goodix.c` from the **RK BSP tree**
+  (`~/cm3-buildroot/.../linux-custom`). That goodix `request_irq`s and ABORTS probe
+  with **`-22`** when there is no interrupt -> it is the **WRONG FORK**. The Pi runs
+  the **Raspberry-Pi-kernel** goodix, which works with **no interrupt**. NO INT is
+  wired and that is SETTLED - do not reopen it.
+- **Driver-name collision:** both the built-in gt9xx (`CONFIG_TOUCHSCREEN_GT9XX=y`,
+  cannot blacklist) and mainline goodix register the i2c driver name `Goodix-TS`;
+  gt9xx wins, so the module must rename `.driver.name` (used `goodix-ws-ts`) to load.
+- **REMAINING WORK = a goodix that runs WITHOUT an irq, like the Pi's:** either patch
+  the RK-BSP goodix to poll / skip `request_irq` when `irq==0`, or build from the
+  Pi-kernel goodix source.
+- **Box state:** eMMC boot DTB is now `goodix,gt911` + the bool (backups `*.pre911.*`
+  on `/mnt/ro`); the installed eMMC `goodix_ts.ko` is the OLD **colliding** build that
+  fails at boot; the working (renamed, reset-patched, irq-failing) build lived only in
+  tmpfs `~/goodix-build` and is gone after reboot. Rebuild = `goodix.c` +
+  `goodix_fwupload.c` + a two-file Makefile (`goodix_ts-y := goodix.o goodix_fwupload.o`).
