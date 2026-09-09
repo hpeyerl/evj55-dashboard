@@ -176,3 +176,11 @@ min/max in the SAME call:
 lv_evdev API: `lv_evdev_set_swap_axes(indev,bool)`, `lv_evdev_set_calibration(indev,
 min_x,min_y,max_x,max_y)` - `_evdev_calibrate` inverts when min>max. Iterate: 2-3
 rebuilds max to find the correct corner.
+
+## 2026-09-09 - SOLVED, end to end
+GT911 touch fully working on the CM3 and persisted. Driver: reset + poll + driver-name-
+rename patch, auto-loads from eMMC at cold boot (verified - `goodix-ws-ts` binds, ID 9271,
+polled input2, no INT). App: LVGL coordinate fix, one line pair after `lv_indev_set_display`:
+`lv_evdev_set_swap_axes(touch, true); lv_evdev_set_calibration(touch, 0, 0, 720, 1920);`
+(aligned on the first try, no mirror needed). Binary + source persisted to eMMC
+(/mnt/ro, backups `*.pretouch.*`). The whole GT911-on-CM3 saga is closed.

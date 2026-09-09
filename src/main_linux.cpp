@@ -183,7 +183,7 @@ int main(int argc, char **argv)
     // --- touch: evdev (Goodix GT911) ---
     if (touch_dev) {
         lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, touch_dev);
-        if (touch) { lv_indev_set_display(touch, disp); printf("touch: %s\n", touch_dev); }
+        if (touch) { lv_indev_set_display(touch, disp); lv_evdev_set_swap_axes(touch, true); lv_evdev_set_calibration(touch, 0, 0, 720, 1920); printf("touch: %s\n", touch_dev); }
         else fprintf(stderr, "warning: lv_evdev_create(%s) failed — running without touch\n", touch_dev);
     } else {
         printf("touch: (none — pass event device as arg 2 to enable)\n");
