@@ -34,6 +34,7 @@
 #include "lvgl.h"
 #include "dashboard_ui.h"
 #include "can_parser.h"      // DashData
+#include "vss_reader.h"    // VSS speed reader (GPIO3_D3 pulse -> mph)
 #include "gear_shifter.h"    // gear_shifter_current()
 #include "bms_http.h"        // bms_http_poll()
 #include "http_api.h"        // http_api_start()
@@ -241,6 +242,13 @@ int main(int argc, char **argv)
         int ov = (fr.can_id & CAN_EFF_FLAG) ? 67 : 47;
         canload_bits += (uint64_t)((ov + 8 * fr.can_dlc) * 1.15f);
     };
+    // VSS speed sensor: interrupt-driven pulse counter on gpiochip3 line 27
+    // (pin18/GPIO3_D3). Overrides CAN speed when active. Calibrate pulses_per_mile
+    // in-vehicle later; default is the ~12 pulses/m estimate.
+    { vss_cal_t vcal; vss_default_cal(&vcal);
+      if (vss_start("gpiochip3", 27, &vcal) == 0) printf("vss: started (gpiochip3 line 27)\n");
+      else fprintf(stderr, "vss: start failed - speed will use CAN only\n"); }
+
     for (;;) {
         // Not on CAN yet (or can1 still down)? retry ~1 Hz; switch over as ifaces appear.
         if (!use_can || can1_fd < 0) {
@@ -285,6 +293,12 @@ int main(int argc, char **argv)
             g_dash.gear            = 3;
             g_dash.odo_total_miles = 12345.0f;
             g_dash.trip_miles      = 42.0f;
+        }
+
+        // VSS overrides CAN speed when the sensor is active (pulses present)
+        if (!sim_enabled) {
+            double vss = vss_speed_mph();
+            if (vss > 0.0) g_dash.speed = (float)vss;
         }
 
         // CAN bus load %, refreshed ~1 Hz (500 kbps bus)

@@ -35,6 +35,7 @@ set(REPO ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(dashboard
   src/main_linux.cpp
   src/stubs.cpp
+  src/vss_reader.cpp
   src/bms_http.c
   src/http_api.c
   ${REPO}/src/dashboard_ui.cpp
@@ -60,7 +61,7 @@ target_include_directories(dashboard PRIVATE
 )
 
 find_package(Threads REQUIRED)
-target_link_libraries(dashboard PRIVATE lvgl m ${LIBDRM_LIBRARIES} Threads::Threads)
+target_link_libraries(dashboard PRIVATE lvgl m ${LIBDRM_LIBRARIES} Threads::Threads gpiod)
 
 # Strip symbols in Release (the ~142 KB symbol table; the fonts/rodata stay).
 # Cosmetic — the app loads+inits in ~0.1s — but keeps the deployed binary lean.
