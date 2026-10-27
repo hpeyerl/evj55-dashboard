@@ -1204,12 +1204,12 @@ void dashboard_ui_update(const DashData *d)
         } else if (cs & CRUISE_CC_SET) {
             lv_label_set_text(s_lbl_cruise_st, "SET");
             lv_obj_set_style_text_color(s_lbl_cruise_st, CLR_CYAN, 0);
-            snprintf(buf, sizeof(buf), "%.0f", SPEED_TO_DISPLAY(d->cruise_kph));
+            snprintf(buf, sizeof(buf), "%.0f", KPH_TO_DISPLAY(d->cruise_kph));
             lv_label_set_text(s_lbl_cruise, buf);
         } else if (cs & CRUISE_CC_RESUME) {
             lv_label_set_text(s_lbl_cruise_st, "RES");
             lv_obj_set_style_text_color(s_lbl_cruise_st, CLR_AMBER, 0);
-            snprintf(buf, sizeof(buf), "%.0f", SPEED_TO_DISPLAY(d->cruise_kph));
+            snprintf(buf, sizeof(buf), "%.0f", KPH_TO_DISPLAY(d->cruise_kph));
             lv_label_set_text(s_lbl_cruise, buf);
         } else if (cs & CRUISE_CC_ON) {
             lv_label_set_text(s_lbl_cruise_st, "CC");

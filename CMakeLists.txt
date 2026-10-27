@@ -48,8 +48,16 @@ add_executable(dashboard
 
 # DISPLAY_TARGET=2 -> Waveshare 1920x720 layout; SIM_DATA drives the demo.
 # LCD_*_RES are the landscape UI dimensions (ESP sets these via platformio flags).
+# UNITS_METRIC: km/h, km, km/kWh (default); -DUNITS_METRIC=OFF for mph/mi.
+option(UNITS_METRIC "Display metric units" ON)
+if(UNITS_METRIC)
+  set(UNITS_METRIC_VAL 1)
+else()
+  set(UNITS_METRIC_VAL 0)
+endif()
 target_compile_definitions(dashboard PRIVATE
-    DISPLAY_TARGET=2 SIM_DATA=1 LCD_H_RES=1920 LCD_V_RES=720 BMS_HTTP=1)
+    DISPLAY_TARGET=2 SIM_DATA=1 LCD_H_RES=1920 LCD_V_RES=720 BMS_HTTP=1
+    UNITS_METRIC=${UNITS_METRIC_VAL})
 
 # Include order matters: compat shims first (shadow esp_timer.h / wifi_manager.h /
 # display_driver.h), then our linux dir (lv_conf.h) before the ESP src/ copy.

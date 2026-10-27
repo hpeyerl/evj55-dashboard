@@ -1,4 +1,4 @@
-// units.h — compile-time unit selection
+// units.h - compile-time unit selection
 // Set -DUNITS_METRIC=1 for km/km/h, omit or =0 for mi/mph
 
 #pragma once
@@ -9,12 +9,12 @@
   #define UNITS_DIST_LABEL    "km"
   #define UNITS_EFF_LABEL     "km/kWh"
 
-  // Conversion from internal SI values
-  // Internal: speed in MPH, distance in miles (from CAN)
-  // We convert at display time
+  // Internal units: speed in mph, distance in miles, except the cruise
+  // target, which is kph. Converted at display time.
   #define SPEED_TO_DISPLAY(mph)   ((mph) * 1.60934f)
   #define DIST_TO_DISPLAY(mi)     ((mi)  * 1.60934f)
   #define EFF_TO_DISPLAY(mi_kwh)  ((mi_kwh) * 1.60934f)
+  #define KPH_TO_DISPLAY(kph)     (kph)
 
 #else
 
@@ -25,5 +25,6 @@
   #define SPEED_TO_DISPLAY(mph)   (mph)
   #define DIST_TO_DISPLAY(mi)     (mi)
   #define EFF_TO_DISPLAY(mi_kwh)  (mi_kwh)
+  #define KPH_TO_DISPLAY(kph)     ((kph) / 1.60934f)
 
 #endif
