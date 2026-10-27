@@ -102,6 +102,7 @@ static lv_obj_t *s_lbl_prnd[4];
 static lv_obj_t *s_lbl_range_badge = NULL;   // M5Dial hi/lo range (display only)
 static lv_obj_t *s_lbl_motor_badge = NULL;   // M5Dial motor config (display only)
 static void prv_add_arrow_nav(lv_obj_t *screen);   // fwd decl (used in home builder)
+static void prv_add_regen_button(lv_obj_t *screen); // fwd decl (used in home builder)
 static lv_obj_t *s_lbl_cruise    = NULL;  // cruise speed target
 static lv_obj_t *s_lbl_cruise_st = NULL;  // CC / SET / RES indicator
 static lv_obj_t *s_lbl_eff     = NULL;
@@ -692,6 +693,7 @@ void dashboard_ui_create(lv_display_t *disp)
     // (bottom tab bar removed — navigation is the 🏠 ◀ ▶ cluster added below;
     //  MAIN_H now spans full height so the combs aren't cut off.)
     prv_add_arrow_nav(scr);
+    prv_add_regen_button(scr);
 }
 // Forward declarations for screen helpers
 static void prv_ensure_settings_screen(void);
@@ -1167,6 +1169,80 @@ static lv_obj_t *s_regen_lbl    = NULL;
 static int  s_regen_current_mag = REGEN_MAG_DEFAULT;  // magnitude to show; from VCU once read
 static bool s_regen_have_current = false;             // true once the VCU has reported a value
 
+// Regen ON/OFF button (home screen, snow/ice). OFF writes regenmax = 0; ON
+// restores the last non-zero value the VCU reported. Long-press only, so a
+// stray tap while driving can't drop regen. The button shows the VCU's
+// read-back value, never the value we asked for. Never saved to flash: a
+// Zombie power cycle returns to its saved regenmax.
+static lv_obj_t *s_regen_btn     = NULL;
+static lv_obj_t *s_regen_btn_lbl = NULL;
+static int  s_regen_live_mag = -1;             // VCU regenmax magnitude, -1 = not read yet
+static int  s_regen_on_mag   = REGEN_MAG_MIN;  // restore value for ON (last non-zero read)
+static bool s_regen_pending  = false;          // write sent, waiting for read-back
+
+static void prv_regen_btn_refresh(void)
+{
+    lv_color_t fg, bg;
+    lv_opa_t   bg_opa;
+
+    if (!s_regen_btn) return;
+    if (s_regen_pending || s_regen_live_mag < 0) {
+        lv_label_set_text(s_regen_btn_lbl, s_regen_pending ? "REGEN ..." : "REGEN ?");
+        fg = CLR_TEXT_MID; bg = CLR_PANEL; bg_opa = LV_OPA_COVER;
+    } else if (s_regen_live_mag == 0) {
+        lv_label_set_text(s_regen_btn_lbl, "REGEN OFF");
+        fg = CLR_BG; bg = CLR_AMBER; bg_opa = LV_OPA_COVER;
+    } else {
+        lv_label_set_text_fmt(s_regen_btn_lbl, "REGEN -%d%%", s_regen_live_mag);
+        fg = CLR_GREEN; bg = CLR_PANEL; bg_opa = LV_OPA_COVER;
+    }
+    lv_obj_set_style_text_color(s_regen_btn_lbl, fg, 0);
+    lv_obj_set_style_bg_color(s_regen_btn, bg, 0);
+    lv_obj_set_style_bg_opa(s_regen_btn, bg_opa, 0);
+    lv_obj_set_style_border_color(s_regen_btn,
+                                  s_regen_live_mag == 0 ? CLR_AMBER : CLR_GREEN, 0);
+}
+
+// Long-press: toggle. Unknown state (no read-back yet) does nothing.
+static void prv_regen_btn_cb(lv_event_t *e)
+{
+    int target;
+
+    (void)e;
+    if (s_regen_live_mag < 0 || s_regen_pending) return;
+    target = (s_regen_live_mag == 0) ? s_regen_on_mag : 0;
+    if (dashboard_vcu_set_param(REGEN_PARAM_ID, -(float)target)) {
+        s_regen_pending = true;
+    } else {
+        lv_label_set_text(s_regen_btn_lbl, "NO VCU");
+        lv_obj_set_style_text_color(s_regen_btn_lbl, CLR_AMBER, 0);
+        return;
+    }
+    prv_regen_btn_refresh();
+}
+
+// Right panel, under the nav cluster; same 224px span as the three nav buttons.
+static void prv_add_regen_button(lv_obj_t *screen)
+{
+    lv_obj_t *btn;
+
+    btn = lv_obj_create(screen);
+    lv_obj_set_size(btn, 224, 64);
+    lv_obj_align(btn, LV_ALIGN_RIGHT_MID, -8, 88);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_width(btn, 3, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 12, 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(btn, 8);
+    lv_obj_add_event_cb(btn, prv_regen_btn_cb, LV_EVENT_LONG_PRESSED, NULL);
+    s_regen_btn_lbl = lv_label_create(btn);
+    lv_obj_set_style_text_font(s_regen_btn_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(s_regen_btn_lbl);
+    s_regen_btn = btn;
+    prv_regen_btn_refresh();
+}
+
 // While dragging: update the readout only — do NOT touch the VCU.
 static void prv_regen_changed_cb(lv_event_t *e)
 {
@@ -1192,6 +1268,11 @@ static void prv_regen_released_cb(lv_event_t *e)
 extern "C" void dashboard_ui_set_regen_current(float pct)
 {
     int mag = (int)lroundf(-pct);                 // regenmax is negative → magnitude
+    if (mag < 0) mag = 0;
+    s_regen_live_mag = mag;                       // regen button: raw, 0 = OFF
+    if (mag > 0) s_regen_on_mag = mag;
+    s_regen_pending = false;
+    prv_regen_btn_refresh();
     if (mag < REGEN_MAG_MIN) mag = REGEN_MAG_MIN;
     if (mag > REGEN_MAG_MAX) mag = REGEN_MAG_MAX;
     s_regen_current_mag  = mag;
@@ -1199,6 +1280,11 @@ extern "C" void dashboard_ui_set_regen_current(float pct)
     if (!s_regen_slider) return;                  // not built yet → applied on build
     if (lv_obj_has_state(s_regen_slider, LV_STATE_PRESSED)) return;  // don't fight a drag
     lv_slider_set_value(s_regen_slider, mag, LV_ANIM_OFF);
+    if (s_regen_live_mag == 0) {
+        lv_label_set_text(s_regen_lbl, "REGEN OFF  (release slider to set)");
+        lv_obj_set_style_text_color(s_regen_lbl, CLR_AMBER, 0);
+        return;
+    }
     lv_label_set_text_fmt(s_regen_lbl, "REGEN LIMIT  -%d%%", mag);
     lv_obj_set_style_text_color(s_regen_lbl, CLR_TEXT_BRIGHT, 0);
 }
@@ -1263,11 +1349,13 @@ static void prv_ensure_vcu_screen(void)
     int start_mag = s_regen_have_current ? s_regen_current_mag : REGEN_MAG_DEFAULT;
 
     s_regen_lbl = lv_label_create(rc);
-    if (s_regen_have_current)
+    if (s_regen_live_mag == 0)
+        lv_label_set_text(s_regen_lbl, "REGEN OFF  (release slider to set)");
+    else if (s_regen_have_current)
         lv_label_set_text_fmt(s_regen_lbl, "REGEN LIMIT  -%d%%", start_mag);
     else
         lv_label_set_text_fmt(s_regen_lbl, "REGEN LIMIT  -%d%%  ?", start_mag);
-    lv_obj_set_style_text_color(s_regen_lbl,
+    lv_obj_set_style_text_color(s_regen_lbl, s_regen_live_mag == 0 ? CLR_AMBER :
                                 s_regen_have_current ? CLR_TEXT_BRIGHT : CLR_TEXT_MID, 0);
     lv_obj_set_style_text_font(s_regen_lbl, &lv_font_montserrat_24, 0);
     lv_obj_align(s_regen_lbl, LV_ALIGN_TOP_LEFT, 0, 0);

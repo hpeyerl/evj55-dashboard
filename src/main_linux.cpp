@@ -88,6 +88,10 @@ static int open_can_socket(const char *iface)
 // CAN TX socket, set once the RX socket is bound (SocketCAN raw is bidirectional).
 // -1 until then / in SIM mode, in which case a param write is a no-op + log.
 static int s_can_tx_fd = -1;
+// Set by a regenmax write; the main loop re-reads it so the UI shows the VCU's value.
+static bool s_regen_resync = false;
+#define REGEN_PARAM 61   // ZombieVerter regenmax (see dashboard_ui.cpp)
+#define REGEN_RESYNC_MS 5000
 
 // Platform hook the shared UI calls on regen-slider release. Sends an expedited
 // SDO download (mirrors src/sdo_manager.c prv_send_frame): CAN 0x603,
@@ -117,6 +121,7 @@ extern "C" bool dashboard_vcu_set_param(uint16_t param_id, float value)
     bool ok = (n == (ssize_t)sizeof fr);
     printf("VCU set param %u = %.1f (raw %d): %s\n",
            param_id, value, raw, ok ? "sent 0x603" : "TX FAIL");
+    if (ok && param_id == REGEN_PARAM) s_regen_resync = true;
     return ok;
 }
 
@@ -220,9 +225,9 @@ int main(int argc, char **argv)
     float t = 0.0f;
     uint64_t canload_bits = 0;               // CAN bus-load accumulator
     uint32_t canload_t0   = millis_cb();
-    const uint16_t REGEN_PARAM = 61;         // ZombieVerter regenmax (see dashboard_ui.cpp)
     bool     regen_readback_done = false;    // set once the VCU answers our read
     uint32_t regen_req_t0 = 0;               // last read-request time (0 = never)
+    uint32_t regen_ok_t0  = 0;               // last time the VCU answered
     dash_screen_t prev_screen = DASH_SCREEN_HOME;   // for STATUS-entry edge detect
     // Process one frame from either bus: shared parser + SDO readback + bus-load.
     auto process_frame = [&](const struct can_frame &fr) {
@@ -237,6 +242,7 @@ int main(int argc, char **argv)
                                         (fr.data[6] << 16) | (fr.data[7] << 24));
                 dashboard_ui_set_regen_current(raw / 32.0f);
                 regen_readback_done = true;
+                regen_ok_t0 = millis_cb();
             }
         }
         int ov = (fr.can_id & CAN_EFF_FLAG) ? 67 : 47;
@@ -320,8 +326,17 @@ int main(int argc, char **argv)
         }
         prev_screen = scr;
 
-        // Regenmax readback: poll ~1 Hz until the VCU answers, so the slider
-        // shows the real value. Stops once we've heard back (re-armed above).
+        // Regenmax readback: poll ~1 Hz until the VCU answers, so the slider and
+        // regen button show the real value. Re-armed after our own write (read
+        // ~200 ms later) and every REGEN_RESYNC_MS, so a Zombie reboot back to
+        // its saved value or an M5Dial write shows up.
+        if (s_regen_resync) {
+            s_regen_resync = false;
+            regen_readback_done = false;
+            regen_req_t0 = millis_cb() - 800;
+        }
+        if (regen_readback_done && millis_cb() - regen_ok_t0 >= REGEN_RESYNC_MS)
+            regen_readback_done = false;
         if (use_can && !regen_readback_done) {
             uint32_t now = millis_cb();
             if (regen_req_t0 == 0 || now - regen_req_t0 >= 1000) {
