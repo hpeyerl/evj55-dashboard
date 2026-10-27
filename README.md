@@ -78,7 +78,7 @@ Build the deployable CM3 binary on an x86-64 dev box instead of on-target:
 ```sh
 sudo apt install -y g++-aarch64-linux-gnu
 sudo dpkg --add-architecture arm64
-sudo apt install -y libdrm-dev:arm64          # arm64 pkgs come from ports.ubuntu.com
+sudo apt install -y libdrm-dev:arm64 libgpiod-dev:arm64 # arm64 pkgs come from ports.ubuntu.com
 
 cmake -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-aarch64.cmake \
       -DCMAKE_BUILD_TYPE=Release

@@ -2,7 +2,7 @@
 #
 # Requires on the dev box:
 #   sudo apt install g++-aarch64-linux-gnu
-#   sudo dpkg --add-architecture arm64 && sudo apt install libdrm-dev:arm64
+#   sudo dpkg --add-architecture arm64 && sudo apt install libdrm-dev:arm64 libgpiod-dev:arm64
 #   (arm64 packages come from ports.ubuntu.com; see /etc/apt/sources.list.d/arm64-ports.list)
 #
 # Usage:

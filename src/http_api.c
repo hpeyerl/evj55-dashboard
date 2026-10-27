@@ -14,6 +14,7 @@
 #include "cJSON.h"
 
 #include <pthread.h>
+#include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -184,6 +185,7 @@ static void handle_screenshot(int fd, const char *path)
 static void *server_thread(void *arg)
 {
     int port = (int)(intptr_t)arg;
+    struct timeval rcv_to = { 2, 0 };   // idle client can't block the server
     signal(SIGPIPE, SIG_IGN);
 
     int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -207,6 +209,7 @@ static void *server_thread(void *arg)
     for (;;) {
         int c = accept(s, NULL, NULL);
         if (c < 0) continue;
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &rcv_to, sizeof rcv_to);
         char buf[1024];
         ssize_t n = read(c, buf, sizeof buf - 1);
         if (n > 0) {
