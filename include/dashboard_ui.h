@@ -41,6 +41,10 @@ bool dashboard_vcu_set_param(uint16_t param_id, float value);
 // Safe to call before the status screen exists (applied when it's built).
 void dashboard_ui_set_regen_current(float pct);
 
+// Platform -> UI: the VCU's current value of a RANGE/MOTOR param (27 Gear,
+// 129 MotActive), read back over SDO. Clears a pending badge write.
+void dashboard_ui_set_mode_current(uint16_t param_id, int value);
+
 #ifdef __cplusplus
 }
 #endif

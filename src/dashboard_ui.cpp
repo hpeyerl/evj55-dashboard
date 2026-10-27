@@ -99,10 +99,11 @@ static lv_obj_t *s_lbl_range   = NULL;
 static lv_obj_t *s_lbl_pwr_val = NULL;
 static lv_obj_t *s_lbl_speed   = NULL;
 static lv_obj_t *s_lbl_prnd[4];
-static lv_obj_t *s_lbl_range_badge = NULL;   // M5Dial hi/lo range (display only)
-static lv_obj_t *s_lbl_motor_badge = NULL;   // M5Dial motor config (display only)
+static lv_obj_t *s_lbl_range_badge = NULL;   // VCU Gear (27), long-press to change
+static lv_obj_t *s_lbl_motor_badge = NULL;   // VCU MotActive (129), long-press to change
 static void prv_add_arrow_nav(lv_obj_t *screen);   // fwd decl (used in home builder)
 static void prv_add_regen_button(lv_obj_t *screen); // fwd decl (used in home builder)
+static void prv_mode_badge_cb(lv_event_t *e);       // fwd decl (used in home builder)
 static lv_obj_t *s_lbl_cruise    = NULL;  // cruise speed target
 static lv_obj_t *s_lbl_cruise_st = NULL;  // CC / SET / RES indicator
 static lv_obj_t *s_lbl_eff     = NULL;
@@ -688,6 +689,16 @@ void dashboard_ui_create(lv_display_t *disp)
         lv_obj_set_style_radius(s_lbl_motor_badge, 6, 0);
         lv_obj_set_style_pad_all(s_lbl_motor_badge, 4, 0);
         lv_obj_set_pos(s_lbl_motor_badge, cluster_cx + 14, badge_y);
+
+        // Long-press a badge -> chooser (see prv_mode_badge_cb).
+        lv_obj_add_flag(s_lbl_range_badge, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(s_lbl_range_badge, 16);
+        lv_obj_add_event_cb(s_lbl_range_badge, prv_mode_badge_cb,
+                            LV_EVENT_LONG_PRESSED, (void *)(intptr_t)0);
+        lv_obj_add_flag(s_lbl_motor_badge, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(s_lbl_motor_badge, 16);
+        lv_obj_add_event_cb(s_lbl_motor_badge, prv_mode_badge_cb,
+                            LV_EVENT_LONG_PRESSED, (void *)(intptr_t)1);
     }
 
     // (bottom tab bar removed — navigation is the 🏠 ◀ ▶ cluster added below;
@@ -705,6 +716,170 @@ static lv_obj_t *s_scr_bms = NULL;
 static void prv_ensure_bms_screen(void);
 static void prv_update_bms(void);
 #endif
+
+// ── RANGE / MOTOR badges: VCU read-back + long-press chooser ──────────────
+// Writes ZombieVerter Gear (27) / MotActive (129) over SDO. Stopped only: the
+// Zombie applies a manual HIGH->LOW straight to the shift solenoids, which at
+// speed overspeeds MG2. "Stopped" = displayed speed (VSS, else CAN) under
+// MODE_STOP_SPEED; a dead VSS reads 0 and does not block. Never saved to flash.
+#define MODE_PARAM_RANGE  27
+#define MODE_PARAM_MOTOR  129
+#define MODE_STOP_SPEED   1.0f
+#define MODE_MSG_MS       1500
+static const char *s_mode_names[2][4] = {
+    { "LOW", "HIGH", "AUTO", "HI-LO" },
+    { "MG1+2", "MG1", "MG2", "BLEND" },
+};
+static const char *s_mode_title[2] = { "RANGE", "MOTOR" };
+static const uint16_t s_mode_param[2] = { MODE_PARAM_RANGE, MODE_PARAM_MOTOR };
+static float    s_speed_now = 0.0f;
+static int      s_mode_val[2]     = { -2, -2 };   // last shown; -2 = force redraw
+static bool     s_mode_pending[2] = { false, false };
+static uint32_t s_mode_msg_t0[2]  = { 0, 0 };     // "STOP" / "NO VCU" shown since
+static lv_obj_t *s_mode_chooser   = NULL;         // backdrop on lv_layer_top()
+
+static lv_obj_t *prv_mode_badge(int k)
+{
+    return k == 0 ? s_lbl_range_badge : s_lbl_motor_badge;
+}
+
+static void prv_mode_msg(int k, const char *msg)
+{
+    lv_label_set_text(prv_mode_badge(k), msg);
+    lv_obj_set_style_text_color(prv_mode_badge(k), CLR_AMBER, 0);
+    s_mode_msg_t0[k] = lv_tick_get();
+    s_mode_val[k] = -2;
+}
+
+static void prv_mode_badges_update(int hl, int mg)
+{
+    int v[2] = { hl, mg };
+    int k;
+
+    for (k = 0; k < 2; k++) {
+        if (!prv_mode_badge(k)) continue;
+        if (s_mode_msg_t0[k] != 0) {
+            if (lv_tick_elaps(s_mode_msg_t0[k]) < MODE_MSG_MS) continue;
+            s_mode_msg_t0[k] = 0;
+        }
+        if (s_mode_pending[k]) {
+            if (s_mode_val[k] != -3) {
+                lv_label_set_text(prv_mode_badge(k), "...");
+                lv_obj_set_style_text_color(prv_mode_badge(k), CLR_TEXT_MID, 0);
+                s_mode_val[k] = -3;
+            }
+            continue;
+        }
+        if (v[k] == s_mode_val[k]) continue;
+        lv_label_set_text(prv_mode_badge(k),
+                          (v[k] >= 0 && v[k] < 4) ? s_mode_names[k][v[k]] : "--");
+        lv_obj_set_style_text_color(prv_mode_badge(k), CLR_TEXT_BRIGHT, 0);
+        s_mode_val[k] = v[k];
+    }
+}
+
+extern "C" void dashboard_ui_set_mode_current(uint16_t param_id, int value)
+{
+    int k;
+
+    (void)value;   // value itself arrives via DashData (hl_mode / mg_mode)
+    for (k = 0; k < 2; k++)
+        if (s_mode_param[k] == param_id) {
+            s_mode_pending[k] = false;
+            s_mode_val[k] = -2;
+        }
+}
+
+static void prv_mode_chooser_close(void)
+{
+    if (s_mode_chooser) lv_obj_delete(s_mode_chooser);
+    s_mode_chooser = NULL;
+}
+
+static void prv_mode_backdrop_cb(lv_event_t *e)
+{
+    if (lv_event_get_target(e) == lv_event_get_current_target(e))
+        prv_mode_chooser_close();   // tap outside the panel
+}
+
+// user_data = k * 4 + option
+static void prv_mode_option_cb(lv_event_t *e)
+{
+    int code = (int)(intptr_t)lv_event_get_user_data(e);
+    int k = code / 4, opt = code % 4;
+
+    prv_mode_chooser_close();
+    if (s_speed_now > MODE_STOP_SPEED) {
+        prv_mode_msg(k, "STOP");
+        return;
+    }
+    if (!dashboard_vcu_set_param(s_mode_param[k], (float)opt)) {
+        prv_mode_msg(k, "NO VCU");
+        return;
+    }
+    s_mode_pending[k] = true;
+}
+
+static void prv_mode_badge_cb(lv_event_t *e)
+{
+    int k = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_t *bd, *panel, *title, *btn, *lbl;
+    int i;
+
+    if (s_mode_chooser || s_mode_pending[k]) return;
+    if (s_speed_now > MODE_STOP_SPEED) {
+        prv_mode_msg(k, "STOP");
+        return;
+    }
+    bd = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(bd, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(bd, 0, 0);
+    lv_obj_set_style_bg_color(bd, CLR_BG, 0);
+    lv_obj_set_style_bg_opa(bd, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(bd, 0, 0);
+    lv_obj_set_style_radius(bd, 0, 0);
+    lv_obj_clear_flag(bd, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(bd, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(bd, prv_mode_backdrop_cb, LV_EVENT_CLICKED, NULL);
+    s_mode_chooser = bd;
+
+    panel = lv_obj_create(bd);
+    lv_obj_set_size(panel, 4 * 160 + 5 * 16, 72 + 64);
+    lv_obj_align(panel, LV_ALIGN_RIGHT_MID, -16, 0);
+    lv_obj_set_style_bg_color(panel, CLR_PANEL, 0);
+    lv_obj_set_style_border_color(panel, CLR_CYAN, 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_radius(panel, 12, 0);
+    lv_obj_set_style_pad_all(panel, 16, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    title = lv_label_create(panel);
+    lv_label_set_text(title, s_mode_title[k]);
+    lv_obj_set_style_text_color(title, CLR_TEXT_MID, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    for (i = 0; i < 4; i++) {
+        btn = lv_obj_create(panel);
+        lv_obj_set_size(btn, 160, 72);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, i * (160 + 16), 0);
+        lv_obj_set_style_bg_color(btn, i == s_mode_val[k] ? CLR_CYAN : CLR_BG, 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(btn, CLR_CYAN, 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_border_width(btn, 3, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(btn, 12, 0);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(btn, prv_mode_option_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)(k * 4 + i));
+        lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, s_mode_names[k][i]);
+        lv_obj_set_style_text_color(lbl, i == s_mode_val[k] ? CLR_BG : CLR_CYAN, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_center(lbl);
+    }
+}
 
 // ── dashboard_ui_update ───────────────────────────────────────────────────
 void dashboard_ui_update(const DashData *d)
@@ -900,20 +1075,9 @@ void dashboard_ui_update(const DashData *d)
         last_boxed = boxed;
     }
 
-    // ── Range + motor-config badges (M5Dial aux pages, display only) ───────
-    static const char *hl_names[4] = { "LOW", "HIGH", "AUTO", "HI-LO" };
-    static const char *mg_names[4] = { "MG1+2", "MG1", "MG2", "BLEND" };
-    static int last_hl = -2, last_mg = -2;
-    if (s_lbl_range_badge && d->hl_mode != last_hl) {
-        lv_label_set_text(s_lbl_range_badge,
-            (d->hl_mode >= 0 && d->hl_mode < 4) ? hl_names[d->hl_mode] : "--");
-        last_hl = d->hl_mode;
-    }
-    if (s_lbl_motor_badge && d->mg_mode != last_mg) {
-        lv_label_set_text(s_lbl_motor_badge,
-            (d->mg_mode >= 0 && d->mg_mode < 4) ? mg_names[d->mg_mode] : "--");
-        last_mg = d->mg_mode;
-    }
+    // ── Range + motor-config badges (VCU read-back; long-press to change) ──
+    s_speed_now = d->speed;
+    prv_mode_badges_update(d->hl_mode, d->mg_mode);
 
     // ── Power arc ─────────────────────────────────────────────────────────
     // Arc sweeps PWR_ARC_START(300°) to PWR_ARC_END(60°) = 120° total.

@@ -43,9 +43,9 @@ typedef struct {
     // Gear:  0=P  1=R  2=N  3=D
     uint8_t gear;          // requested gear from shifter (0x312)
 
-    // M5Dial shifter aux pages (display only). -1 = not yet received.
-    int8_t  hl_mode;       // hi/lo range   0=L 1=H 2=A 3=HL   (0x300 data[0])
-    int8_t  mg_mode;       // motor config  0=MG1+2 1=MG1 2=MG2 3=Blend (0x301 data[0])
+    // VCU range / motor config, from SDO read-back. -1 = not yet read.
+    int8_t  hl_mode;       // Gear (27):      0=L 1=H 2=A 3=HL
+    int8_t  mg_mode;       // MotActive (129): 0=MG1+2 1=MG1 2=MG2 3=Blend
 
     // ZombieVerter VCU frames 0x510/0x511
     int16_t vcu_rpm;       // motor (MG2) RPM (2016)

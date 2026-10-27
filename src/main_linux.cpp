@@ -88,10 +88,26 @@ static int open_can_socket(const char *iface)
 // CAN TX socket, set once the RX socket is bound (SocketCAN raw is bidirectional).
 // -1 until then / in SIM mode, in which case a param write is a no-op + log.
 static int s_can_tx_fd = -1;
-// Set by a regenmax write; the main loop re-reads it so the UI shows the VCU's value.
-static bool s_regen_resync = false;
-#define REGEN_PARAM 61   // ZombieVerter regenmax (see dashboard_ui.cpp)
-#define REGEN_RESYNC_MS 5000
+// VCU params the UI shows from SDO read-back (never from what we asked for).
+// Each is polled ~1 Hz until answered, re-read ~200 ms after our own write, and
+// re-read every VCU_RESYNC_MS so a Zombie reboot or an M5Dial write shows up.
+#define REGEN_PARAM     61    // regenmax (slider + regen button)
+#define GEAR_PARAM      27    // Gear: 0=LOW 1=HIGH 2=AUTO 3=HI-LO (RANGE badge)
+#define MOTACTIVE_PARAM 129   // MotActive: 0=MG1+2 1=MG1 2=MG2 3=BLEND (MOTOR badge)
+#define VCU_RESYNC_MS   5000
+struct vcu_watch {
+    uint16_t id;
+    bool     done;      // answered since last re-arm
+    bool     resync;    // set by our own write
+    uint32_t req_t0;    // last read request (0 = never)
+    uint32_t ok_t0;     // last answer
+};
+static struct vcu_watch s_watch[] = {
+    { REGEN_PARAM,     false, false, 0, 0 },
+    { GEAR_PARAM,      false, false, 0, 0 },
+    { MOTACTIVE_PARAM, false, false, 0, 0 },
+};
+#define N_WATCH ((int)(sizeof(s_watch) / sizeof(s_watch[0])))
 
 // Platform hook the shared UI calls on regen-slider release. Sends an expedited
 // SDO download (mirrors src/sdo_manager.c prv_send_frame): CAN 0x603,
@@ -121,7 +137,8 @@ extern "C" bool dashboard_vcu_set_param(uint16_t param_id, float value)
     bool ok = (n == (ssize_t)sizeof fr);
     printf("VCU set param %u = %.1f (raw %d): %s\n",
            param_id, value, raw, ok ? "sent 0x603" : "TX FAIL");
-    if (ok && param_id == REGEN_PARAM) s_regen_resync = true;
+    for (int i = 0; ok && i < N_WATCH; i++)
+        if (s_watch[i].id == param_id) s_watch[i].resync = true;
     return ok;
 }
 
@@ -225,24 +242,32 @@ int main(int argc, char **argv)
     float t = 0.0f;
     uint64_t canload_bits = 0;               // CAN bus-load accumulator
     uint32_t canload_t0   = millis_cb();
-    bool     regen_readback_done = false;    // set once the VCU answers our read
-    uint32_t regen_req_t0 = 0;               // last read-request time (0 = never)
-    uint32_t regen_ok_t0  = 0;               // last time the VCU answered
     dash_screen_t prev_screen = DASH_SCREEN_HOME;   // for STATUS-entry edge detect
     // Process one frame from either bus: shared parser + SDO readback + bus-load.
     auto process_frame = [&](const struct can_frame &fr) {
         uint32_t id = fr.can_id & CAN_EFF_MASK;
         parse_can_frame(id, fr.data, millis_cb());
-        if (id == 0x583) {   // SDO reply: pick off a regenmax read for the slider
+        if (id == 0x583) {   // SDO reply: pick off reads of the watched params
             uint8_t  cmd   = fr.data[0];
             uint16_t index = (uint16_t)(fr.data[1] | (fr.data[2] << 8));
             uint16_t pid   = (uint16_t)(((index & 0xFF) << 8) | fr.data[3]);
-            if ((cmd == 0x43 || cmd == 0x4B) && pid == REGEN_PARAM) {
-                int32_t raw = (int32_t)(fr.data[4] | (fr.data[5] << 8) |
-                                        (fr.data[6] << 16) | (fr.data[7] << 24));
-                dashboard_ui_set_regen_current(raw / 32.0f);
-                regen_readback_done = true;
-                regen_ok_t0 = millis_cb();
+            int32_t  raw   = (int32_t)(fr.data[4] | (fr.data[5] << 8) |
+                                           (fr.data[6] << 16) | (fr.data[7] << 24));
+            if (cmd == 0x43 || cmd == 0x4B) {
+                for (int i = 0; i < N_WATCH; i++) {
+                    if (s_watch[i].id != pid) continue;
+                    s_watch[i].done  = true;
+                    s_watch[i].ok_t0 = millis_cb();
+                }
+                if (pid == REGEN_PARAM) {
+                    dashboard_ui_set_regen_current(raw / 32.0f);
+                } else if (pid == GEAR_PARAM) {
+                    g_dash.hl_mode = (int8_t)(raw / 32);
+                    dashboard_ui_set_mode_current(pid, raw / 32);
+                } else if (pid == MOTACTIVE_PARAM) {
+                    g_dash.mg_mode = (int8_t)(raw / 32);
+                    dashboard_ui_set_mode_current(pid, raw / 32);
+                }
             }
         }
         int ov = (fr.can_id & CAN_EFF_FLAG) ? 67 : 47;
@@ -317,31 +342,35 @@ int main(int argc, char **argv)
             canload_t0   = cl_now;
         }
 
-        // Re-sync regenmax each time the STATUS screen is opened, so a value
-        // changed out-of-band (e.g. via the Zombie's HTTP port) shows up.
+        // Re-read everything each time the VCU screen is opened.
         dash_screen_t scr = dashboard_ui_get_screen();
-        if (scr == DASH_SCREEN_VCU && prev_screen != DASH_SCREEN_VCU) {
-            regen_readback_done = false;
-            regen_req_t0 = 0;
-        }
+        if (scr == DASH_SCREEN_VCU && prev_screen != DASH_SCREEN_VCU)
+            for (int i = 0; i < N_WATCH; i++) {
+                s_watch[i].done   = false;
+                s_watch[i].req_t0 = 0;
+            }
         prev_screen = scr;
 
-        // Regenmax readback: poll ~1 Hz until the VCU answers, so the slider and
-        // regen button show the real value. Re-armed after our own write (read
-        // ~200 ms later) and every REGEN_RESYNC_MS, so a Zombie reboot back to
-        // its saved value or an M5Dial write shows up.
-        if (s_regen_resync) {
-            s_regen_resync = false;
-            regen_readback_done = false;
-            regen_req_t0 = millis_cb() - 800;
-        }
-        if (regen_readback_done && millis_cb() - regen_ok_t0 >= REGEN_RESYNC_MS)
-            regen_readback_done = false;
-        if (use_can && !regen_readback_done) {
+        // Watched-param read-back (see s_watch). At most one SDO read per loop
+        // pass, so a re-arm of all three goes out ~30 ms apart, not as a burst.
+        if (use_can) {
             uint32_t now = millis_cb();
-            if (regen_req_t0 == 0 || now - regen_req_t0 >= 1000) {
-                vcu_send_sdo_read(REGEN_PARAM);
-                regen_req_t0 = now;
+            bool sent = false;
+            for (int i = 0; i < N_WATCH; i++) {
+                struct vcu_watch *w = &s_watch[i];
+                if (w->resync) {
+                    w->resync = false;
+                    w->done   = false;
+                    w->req_t0 = now - 800;
+                }
+                if (w->done && now - w->ok_t0 >= VCU_RESYNC_MS)
+                    w->done = false;
+                if (sent || w->done) continue;
+                if (w->req_t0 == 0 || now - w->req_t0 >= 1000) {
+                    vcu_send_sdo_read(w->id);
+                    w->req_t0 = now;
+                    sent = true;
+                }
             }
         }
 

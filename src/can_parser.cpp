@@ -130,14 +130,6 @@ void parse_can_frame(uint32_t id, const uint8_t *data, uint32_t now_ms)
         g_dash.last_ms_0x312 = now_ms;
         break;
 
-    case CAN_ID_RANGE:                             // 0x300 M5Dial hi/lo range
-        g_dash.hl_mode = (int8_t)(data[0] & 0x03);
-        break;
-
-    case CAN_ID_MOTOR:                             // 0x301 M5Dial motor config
-        g_dash.mg_mode = (int8_t)(data[0] & 0x03);
-        break;
-
     case CAN_ID_VCU1: {                            // 0x510 ZombieVerter core
         g_dash.vcu_rpm    = (int16_t) extract_le(data,  0, 16);          // signed
         g_dash.vcu_dir    = (int8_t)  extract_le(data, 16,  8);          // DIRS
